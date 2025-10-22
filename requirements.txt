@@ -7,3 +7,4 @@ pandas
 pyperclip
 requests
 oauth2client
+jpholiday
