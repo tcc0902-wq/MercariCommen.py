@@ -1,0 +1,9 @@
+selenium==4.20.0
+gspread
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+pandas
+pyperclip
+requests
+oauth2client
