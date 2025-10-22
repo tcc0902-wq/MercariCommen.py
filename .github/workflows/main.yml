@@ -1,49 +1,59 @@
-name: Mercari Comment Auto
+name: Mercari Comment Auto (parallel)
 
 on:
   schedule:
-    - cron: '30 0 * * 3,6'   # 水・土 9:30 JST
+    - cron: '30 0 * * 3,6'     # 水・土 9:30 JST
   workflow_dispatch:
 
 jobs:
-  run-script:
+  ladies:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-
     steps:
       - uses: actions/checkout@v4
-
-      # Selenium用のChrome + ChromeDriver
       - uses: browser-actions/setup-chrome@v2
-        with:
-          install-chromedriver: true
-
+        with: { install-chromedriver: true }
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      # Secrets を環境に展開（GSHEET_JSON は必須。Cookieは任意）
-      - name: Setup Secrets
+        with: { python-version: '3.11' }
+      - name: Setup Google creds
         run: |
           echo '${{ secrets.GSHEET_JSON }}' > service_account.json
-          echo '${{ secrets.MERCARI_COOKIES_JSON }}' > mercari_cookies.json || true
           echo "GOOGLE_APPLICATION_CREDENTIALS=$PWD/service_account.json" >> $GITHUB_ENV
-          echo "MERCARI_COOKIES_PATH=$PWD/mercari_cookies.json" >> $GITHUB_ENV
-
-      - name: Install dependencies
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      - name: Load ladies cookies
+        run: |
+          echo '${{ secrets.MERCARI_COOKIES_LADIES_JSON }}' > ladies.json
+          echo "MERCARI_COOKIES_PATH=$PWD/ladies.json" >> $GITHUB_ENV
+      - name: レディース：出品取得→コメント
+        run: |
+          python "scripts/メルカリレディス.py"
+          python "scripts/メルカリレディースコメント投稿.py"
 
-      # ここが「実際に動かす」コマンド
-      - name: Echo start
-        run: echo "Starting Mercari comment jobs..."
-
-      - name: Ladies comment posting
-        run: python scripts/メルカリレディースコメント投稿.py
-
-      - name: Mens comment posting
-        run: python scripts/メルカリコメント投稿.py
-
-      - name: Echo done
-        run: echo "All jobs finished."
+  men:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: browser-actions/setup-chrome@v2
+        with: { install-chromedriver: true }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Setup Google creds
+        run: |
+          echo '${{ secrets.GSHEET_JSON }}' > service_account.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$PWD/service_account.json" >> $GITHUB_ENV
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Load men cookies
+        run: |
+          echo '${{ secrets.MERCARI_COOKIES_JSON }}' > men.json
+          echo "MERCARI_COOKIES_PATH=$PWD/men.json" >> $GITHUB_ENV
+      - name: メンズ：出品取得→コメント
+        run: |
+          python "scripts/メルカリメンズ.py"
+          python "scripts/メルカリコメント投稿.py"
