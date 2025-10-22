@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-GitHub Actions 対応版
+GitHub Actions 対応版（安定化強化）
 - ローカルChromeプロファイル非依存（--user-data-dir 未使用）
-- ヘッドレス前提
-- MERCARI_COOKIES_JSON（Secrets）→ mercari_cookies.json を注入してログイン状態を再現
+- ヘッドレス前提（CI向けオプションを追加）
+- MERCARI_COOKIES_PATH（Secretsから展開）でCookie注入 → ログイン再現
 - スプレッドシート認証は GOOGLE_APPLICATION_CREDENTIALS 環境変数で解決
+- コメント欄の検出・送信・反映確認を堅牢化
+- debug/*.png, *.html を出力（workflowで upload-artifact すれば取得可能）
 """
 
 from selenium import webdriver
@@ -29,26 +31,33 @@ from pathlib import Path
 # =========================
 # パス・環境
 # =========================
-REPO_ROOT = Path(__file__).resolve().parents[1]  # リポのルート（/workspace相当）
+REPO_ROOT = Path(__file__).resolve().parents[1]  # リポのルート
 DEBUG_DIR = REPO_ROOT / "debug"
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 COOKIES_PATH = os.environ.get("MERCARI_COOKIES_PATH", str(REPO_ROOT / "mercari_cookies.json"))
 
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1E0XCjvoEriGnBU8dhMro0bC464JJ5hOmiIZUrZoQal8/edit"
-TARGET_SHEET   = "メルカリコメント投稿"
+TARGET_SHEET   = "メルカリコメント投稿"   # ←必要に応じて「メルカリコメント投稿2」等に変更
 
 # =========================
 # Chrome 起動
 # =========================
 def create_driver():
     opts = Options()
+    # CI向け安定化オプション
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1920,1080")
-    # Selenium Manager がChromeDriverを自動解決
+    opts.add_argument("--lang=ja-JP,ja")
+    opts.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+    )
+
+    # Selenium Manager が ChromeDriver を自動解決
     driver = webdriver.Chrome(options=opts)
     driver.set_page_load_timeout(60)
     return driver
@@ -65,13 +74,14 @@ def inject_cookies_if_available(driver):
     try:
         with p.open("r", encoding="utf-8") as f:
             cookies = json.load(f)
-        # ドメインを開いてから add_cookie
+
+        # 先にドメインへアクセス
         driver.get("https://jp.mercari.com/")
         time.sleep(1.0)
 
         count = 0
         for c in cookies:
-            # name/value/domain は必須
+            # name/value/domain は最低限必要
             if not all(k in c for k in ("name", "value", "domain")):
                 continue
             ck = {
@@ -82,7 +92,6 @@ def inject_cookies_if_available(driver):
                 "secure": bool(c.get("secure", True)),
                 "httpOnly": bool(c.get("httpOnly", False)),
             }
-            # 期限属性があれば付与
             if "expiry" in c:
                 ck["expiry"] = c["expiry"]
             try:
@@ -90,26 +99,34 @@ def inject_cookies_if_available(driver):
                 count += 1
             except Exception:
                 pass
+
         print(f"🍪 Cookie 注入完了: {count} 件")
         return count > 0
     except Exception as e:
         print("⚠️ Cookie注入エラー:", e)
         return False
 
-def check_logged_in(driver, timeout=5):
+def is_logged_in(driver, timeout=5) -> bool:
     """
-    ログイン判定の簡易版：
-    - 「ログイン」リンクやメール/パスワード入力が見えない
-    - ユーザーメニュー/アイコンが見える
-    などを総合して軽く判定（レイアウト変動に強く、厳密ではない）
+    ゆるいログイン判定：
+      - ログインリンク/サインインが見当たらない
+      - ヘッダーのプロフィール/出品ボタン系が見える
     """
     try:
+        # 「ログイン」リンクが見えなくなることを基準に
         WebDriverWait(driver, timeout).until_not(
-            EC.presence_of_element_located((By.XPATH, "//a[contains(@href,'/signin') or contains(text(),'ログイン')]"))
+            EC.presence_of_element_located(
+                (By.XPATH, "//a[contains(@href,'/signin') or contains(.,'ログイン')]")
+            )
         )
         return True
     except TimeoutException:
-        return False
+        # 逆にプロフィール/出品ボタン等が見えたらOKにする
+        icons = driver.find_elements(
+            By.XPATH,
+            "//*[@data-testid='header-profile' or contains(@href,'/sell') or contains(@href,'/mypage')]"
+        )
+        return len(icons) > 0
 
 # =========================
 # Google スプレッドシート
@@ -139,7 +156,7 @@ def mark_fail(worksheet, sheet_row: int, status_col: int, reason: str = ""):
         print(f"⚠️ ステータス更新失敗: {e}")
 
 # =========================
-# デバッグ周り
+# デバッグ出力
 # =========================
 def now_tag():
     return datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -179,19 +196,38 @@ def get_comment_blocks(driver):
 def get_comment_count(driver):
     return len(get_comment_blocks(driver))
 
-def find_comment_textarea(driver):
+# --- 強化版：コメント欄検出 ---
+def find_comment_textarea_stronger(driver, timeout=10):
     candidates = [
         (By.CSS_SELECTOR, "#item-info textarea"),
         (By.CSS_SELECTOR, "form textarea"),
         (By.XPATH, "//textarea[not(@disabled)]"),
+        (By.XPATH, "//*[@data-testid='comment']//textarea"),
+        (By.XPATH, "//div[contains(@class,'comment')]/textarea"),
+        # プレースホルダー（クリックで textarea が出てくるUI）
+        (By.XPATH, "//*[self::button or self::div or self::span][contains(., 'コメント') and not(contains(., 'もっと'))]"),
     ]
-    for by, sel in candidates:
-        for el in driver.find_elements(by, sel):
-            try:
-                if el.is_displayed() and el.is_enabled():
-                    return el
-            except Exception:
-                continue
+    end = time.time() + timeout
+    while time.time() < end:
+        for by, sel in candidates:
+            elems = driver.find_elements(by, sel)
+            for el in elems:
+                try:
+                    if el.tag_name.lower() != "textarea":
+                        # プレースホルダーならクリックして再探索
+                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                        el.click()
+                        time.sleep(0.5)
+                        ta = driver.find_elements(By.XPATH, "//textarea[not(@disabled)]")
+                        for t in ta:
+                            if t.is_displayed() and t.is_enabled():
+                                return t
+                        continue
+                    if el.is_displayed() and el.is_enabled():
+                        return el
+                except Exception:
+                    pass
+        time.sleep(0.3)
     return None
 
 SUBMIT_XPATHS = [
@@ -214,7 +250,7 @@ def find_submit_button(driver, timeout=10):
         time.sleep(0.2)
     raise TimeoutException("送信ボタンが見つかりません")
 
-def verify_posted(driver, comment_text: str, before_count: int, timeout=15):
+def verify_posted(driver, comment_text: str, before_count: int, timeout=18):
     end = time.time() + timeout
     seen_toast = False
     partial = comment_text.strip()[:20]
@@ -226,7 +262,7 @@ def verify_posted(driver, comment_text: str, before_count: int, timeout=15):
             if driver.find_elements(By.XPATH, f"//*[contains(normalize-space(), '{pat}')]"):
                 seen_toast = True
         # textarea 空
-        ta = find_comment_textarea(driver)
+        ta = find_comment_textarea_stronger(driver, timeout=1)
         if ta is not None and (ta.get_attribute("value") or "").strip() == "":
             if seen_toast or get_comment_count(driver) >= before_count:
                 return True
@@ -239,7 +275,7 @@ def verify_posted(driver, comment_text: str, before_count: int, timeout=15):
         time.sleep(0.4)
     return False
 
-def wait_item_loaded(driver, timeout=20):
+def wait_item_loaded(driver, timeout=25):
     try:
         WebDriverWait(driver, timeout).until(
             EC.any_of(
@@ -259,11 +295,11 @@ def main():
     wait = WebDriverWait(driver, 15)
 
     # Cookie 注入 → ログイン状態チェック
-    injected = inject_cookies_if_available(driver)
+    inject_cookies_if_available(driver)
     driver.get("https://jp.mercari.com/")
     time.sleep(1.0)
-    if not check_logged_in(driver):
-        print("⚠️ 未ログインの可能性があります（Cookie不十分 or 期限切れ）。ログイン必須の処理は失敗する可能性があります。")
+    if not is_logged_in(driver):
+        print("⚠️ 未ログインの可能性があります（Cookie不十分/期限切れ）。ログイン必須の処理は失敗する可能性があります。")
 
     worksheet, data, status_col = load_sheet_rows()
 
@@ -280,7 +316,7 @@ def main():
             driver.get(url)
             print(f"\nRow {idx}: アクセス → {url}")
 
-            if not wait_item_loaded(driver, timeout=25):
+            if not wait_item_loaded(driver, timeout=30):
                 print(f"Row {idx}: ⚠️ 商品ページ読み込み失敗")
                 save_debug(driver, f"load_timeout_row{idx}")
                 mark_fail(worksheet, idx, status_col, "読み込み失敗")
@@ -288,13 +324,13 @@ def main():
 
             expand_more_comments_if_any(driver)
 
-            # 送信前カウント
+            # 送信前の件数
             before = get_comment_count(driver)
 
-            # テキストエリア取得＆入力
+            # テキストエリア取得＆入力（強化版で再試行）
             area = None
             for attempt in range(1, 4):
-                area = find_comment_textarea(driver)
+                area = find_comment_textarea_stronger(driver, timeout=3)
                 if area:
                     break
                 print(f"Row {idx}: コメント欄検出失敗 {attempt}/3 → スクロール再試行")
@@ -307,7 +343,7 @@ def main():
                 continue
 
             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", area)
-            WebDriverWait(driver, 5).until(EC.element_to_be_clickable(area))
+            WebDriverWait(driver, 6).until(EC.element_to_be_clickable(area))
             area.click(); time.sleep(0.1)
             try:
                 area.clear()
@@ -315,12 +351,12 @@ def main():
                 pass
             time.sleep(0.1)
             area.send_keys(comment)
-            # 入力イベント明示発火
+            # 入力イベント発火
             driver.execute_script("arguments[0].dispatchEvent(new Event('input', {bubbles:true}));", area)
 
             # 送信ボタン取得 → クリック（JS → ネイティブ → Actions）
             try:
-                btn = find_submit_button(driver, timeout=10)
+                btn = find_submit_button(driver, timeout=12)
             except TimeoutException:
                 print(f"Row {idx}: ❌ 送信ボタン未検出")
                 save_debug(driver, f"no_submit_row{idx}")
@@ -352,10 +388,10 @@ def main():
                 continue
 
             # 反映検証
-            ok = verify_posted(driver, comment_text=comment, before_count=before, timeout=18)
+            ok = verify_posted(driver, comment_text=comment, before_count=before, timeout=20)
             if ok:
                 print(f"Row {idx}: ✅ 投稿完了（反映確認済）")
-                # 成功時に「完了」を入れたい場合：
+                # 成功時に「完了」を入れたい場合は以下を有効化
                 # worksheet.update_cell(idx, status_col, "完了")
             else:
                 print(f"Row {idx}: ❌ 投稿失敗（反映確認できず）")
@@ -376,10 +412,10 @@ def main():
             print(f"Row {idx}: WebDriver例外 → {we}")
             save_debug(driver, f"webdriver_row{idx}")
             mark_fail(worksheet, idx, status_col, "WebDriver")
-            # ドライバ再起動で継続
+            # ドライバ再起動で継続（Cookie再注入）
             try:
                 driver.quit()
-            except:
+            except Exception:
                 pass
             driver = create_driver()
             inject_cookies_if_available(driver)
@@ -394,7 +430,7 @@ def main():
     # 終了
     try:
         driver.quit()
-    except:
+    except Exception:
         pass
     print("✅ 全コメント投稿処理 完了")
 
