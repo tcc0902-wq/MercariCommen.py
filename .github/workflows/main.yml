@@ -2,7 +2,7 @@ name: Mercari Comment Auto (parallel)
 
 on:
   schedule:
-    - cron: '30 0 * * 3,6'     # 水・土 9:30 JST
+    - cron: '30 0 * * 3,6'      # 水・土 9:30 JST
   workflow_dispatch:
 
 jobs:
@@ -12,51 +12,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Chrome は Selenium Manager に合わせて stable を入れる（chromedriverは入れない）
       - uses: browser-actions/setup-chrome@v2
-        with:
-      #   install-chromedriver: false   # 明示したい場合は false を指定（デフォルトで入らない）
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # Google 認証ファイルを作成
       - name: Setup Google creds
         run: |
           echo '${{ secrets.GSHEET_JSON }}' > service_account.json
           echo "GOOGLE_APPLICATION_CREDENTIALS=$PWD/service_account.json" >> $GITHUB_ENV
 
-      # 依存関係インストール
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # レディース Cookie を環境変数へ
       - name: Load ladies cookies
         run: |
           echo '${{ secrets.MERCARI_COOKIES_LADIES_JSON }}' > ladies.json
           echo "MERCARI_COOKIES_PATH=$PWD/ladies.json" >> $GITHUB_ENV
 
-      # ✅ ステップを分割：まず「出品取得」だけを実行
+      # 1) 出品取得
       - name: レディース：出品取得
         run: |
           stdbuf -oL -eL python "scripts/メルカリレディス.py"
 
-      # 🔧 保険のクリーンアップ：残存 Chrome を終了＆一時プロファイル削除
+      # 2) Chrome 後片付け
       - name: Cleanup chrome (safety)
         if: always()
         run: |
           pkill -f chrome || true
           rm -rf /tmp/mercari_profile_* || true
 
-      # ✅ 次に「コメント投稿」を実行
+      # 3) コメント投稿
       - name: レディース：コメント投稿
         run: |
           stdbuf -oL -eL python "scripts/メルカリレディースコメント投稿.py"
 
-      # デバッグアーティファクトを収集（debug/*.png, *.html）
       - name: Upload debug artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -74,8 +67,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: browser-actions/setup-chrome@v2
-        with:
-      #   install-chromedriver: false
 
       - uses: actions/setup-python@v5
         with:
@@ -91,25 +82,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # メンズ Cookie を環境変数へ
       - name: Load men cookies
         run: |
           echo '${{ secrets.MERCARI_COOKIES_JSON }}' > men.json
           echo "MERCARI_COOKIES_PATH=$PWD/men.json" >> $GITHUB_ENV
 
-      # ✅ 出品取得
       - name: メンズ：出品取得
         run: |
           stdbuf -oL -eL python "scripts/メルカリメンズ.py"
 
-      # 🔧 Cleanup
       - name: Cleanup chrome (safety)
         if: always()
         run: |
           pkill -f chrome || true
           rm -rf /tmp/mercari_profile_* || true
 
-      # ✅ コメント投稿
       - name: メンズ：コメント投稿
         run: |
           stdbuf -oL -eL python "scripts/メルカリコメント投稿.py"
