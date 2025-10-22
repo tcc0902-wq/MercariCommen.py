@@ -42,7 +42,7 @@ def create_driver():
     chrome_options = Options()
 
     # ==== ヘッドレス設定（ここでON/OFFを切り替える）====
-    chrome_options.add_argument("--headless=chrome")  # 必要に応じて外してOK（ON）
+  
     #chrome_options.add_argument("--headless=chrome")  # 必要に応じて外してOK（OFF）
 
     # 一時プロファイルで競合防止
