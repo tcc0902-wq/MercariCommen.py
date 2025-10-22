@@ -1,0 +1,41 @@
+name: Mercari Comment Auto
+
+on:
+  schedule:
+    - cron: '30 0 * * 3'   # 毎週水曜 9:30 JST
+    - cron: '30 0 * * 6'   # 毎週土曜 9:30 JST
+  workflow_dispatch:
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Chrome + ChromeDriver を用意（Selenium用）
+      - uses: browser-actions/setup-chrome@v2
+        with:
+          install-chromedriver: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Secrets から認証ファイルを作る（後で登録します）
+      - name: Setup Secrets
+        run: |
+          echo '${{ secrets.GSHEET_JSON }}' > service_account.json
+          echo '${{ secrets.MERCARI_COOKIES_JSON }}' > mercari_cookies.json || true
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$PWD/service_account.json" >> $GITHUB_ENV
+          echo "MERCARI_COOKIES_PATH=$PWD/mercari_cookies.json" >> $GITHUB_ENV
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install selenium gspread google-auth jpholiday pandas
+
+      - name: Run MercariCommen
+        run: |
+          python MercariCommen.py
