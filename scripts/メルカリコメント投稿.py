@@ -43,7 +43,7 @@ def create_driver():
 
     # ==== ヘッドレス設定（ここでON/OFFを切り替える）====
   
-    #chrome_options.add_argument("--headless=chrome")  # 必要に応じて外してOK（OFF）
+    chrome_options.add_argument("--headless=chrome")  # 必要に応じて外してOK（OFF）
 
     # 一時プロファイルで競合防止
     tmp_profile = tempfile.mkdtemp(prefix="mercari_profile_")
