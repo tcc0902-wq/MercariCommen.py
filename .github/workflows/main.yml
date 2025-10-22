@@ -2,8 +2,7 @@ name: Mercari Comment Auto
 
 on:
   schedule:
-    - cron: '30 0 * * 3'   # 毎週水曜 9:30 JST
-    - cron: '30 0 * * 6'   # 毎週土曜 9:30 JST
+    - cron: '30 0 * * 3,6'   # 水・土 9:30 JST
   workflow_dispatch:
 
 jobs:
@@ -14,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Chrome + ChromeDriver を用意（Selenium用）
+      # Selenium用のChrome + ChromeDriver
       - uses: browser-actions/setup-chrome@v2
         with:
           install-chromedriver: true
@@ -23,7 +22,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Secrets から認証ファイルを作る（後で登録します）
+      # Secrets を環境に展開（GSHEET_JSON は必須。Cookieは任意）
       - name: Setup Secrets
         run: |
           echo '${{ secrets.GSHEET_JSON }}' > service_account.json
@@ -34,8 +33,17 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install selenium gspread google-auth jpholiday pandas
+          pip install -r requirements.txt
 
-      - name: Run MercariCommen
-        run: |
-          python MercariCommen.py
+      # ここが「実際に動かす」コマンド
+      - name: Echo start
+        run: echo "Starting Mercari comment jobs..."
+
+      - name: Ladies comment posting
+        run: python scripts/メルカリレディースコメント投稿.py
+
+      - name: Mens comment posting
+        run: python scripts/メルカリコメント投稿.py
+
+      - name: Echo done
+        run: echo "All jobs finished."
