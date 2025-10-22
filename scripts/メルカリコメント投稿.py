@@ -67,7 +67,7 @@ def create_driver():
     opts = Options()
 
     # ✅ ヘッドレス切替（通常は ON、デバッグ時はこの行をコメントアウト）
-    opts.add_argument("--headless=new")
+    #opts.add_argument("--headless=new")
 
     # 衝突回避のための一時プロファイル
     profile_dir = tempfile.mkdtemp(prefix="mercari_profile_")
